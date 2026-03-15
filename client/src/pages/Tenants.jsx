@@ -53,6 +53,7 @@ export default function Tenants() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to save tenant");
+
         fetchTenants();
         resetForm();
         setShowModal(false);
