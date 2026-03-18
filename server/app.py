@@ -25,7 +25,7 @@ def register():
         user.set_password(data["password"])
         db.session.add(user)
         db.session.commit()
-        token = create_access_token(identity=str(user.id))
+        token = create_access_token(identity=(user.id))
         return jsonify({"token": token, "user": user.to_dict()}), 201
     except Exception as e:
         db.session.rollback()
@@ -38,7 +38,7 @@ def login():
     user = User.query.filter_by(email=data.get("email")).first()
     if not user or not user.check_password(data.get("password", "")):
         return jsonify({"error": "Invalid credentials"}), 401
-    token = create_access_token(identity=str(user.id))
+    token = create_access_token(identity=(user.id))
     return jsonify({"token": token, "user": user.to_dict()}), 200
 
 
@@ -131,10 +131,21 @@ def delete_property(id):
 #     tenants = Tenant.query.all()
 #     return jsonify([t.to_dict() for t in tenants]), 200
 
+# @app.route("/api/tenants", methods=["GET"])
+# @jwt_required()
+# def get_tenants():
+#     tenants = Tenant.query.all()
+#     return jsonify([t.to_dict() for t in tenants]), 200
+
 @app.route("/api/tenants", methods=["GET"])
 @jwt_required()
 def get_tenants():
-    tenants = Tenant.query.all()
+    user_id = get_jwt_identity()
+
+    tenants = Tenant.query.join(RentPayment).join(Property).filter(
+        Property.user_id == user_id
+    ).all()
+
     return jsonify([t.to_dict() for t in tenants]), 200
 
 
@@ -195,11 +206,11 @@ def delete_tenant(id):
 #  RENT PAYMENT ROUTES (Full CRUD)
 # ─────────────────────────────────────────────
 
-@app.route("/api/rent-payments", methods=["GET"])
-@jwt_required()
-def get_rent_payments():
-    payments = RentPayment.query.all()
-    return jsonify([p.to_dict() for p in payments]), 200
+# @app.route("/api/rent-payments", methods=["GET"])
+# @jwt_required()
+# def get_rent_payments():
+#     payments = RentPayment.query.all()
+#     return jsonify([p.to_dict() for p in payments]), 200
 
 
 @app.route("/api/rent-payments/<int:id>", methods=["GET"])
@@ -207,6 +218,17 @@ def get_rent_payments():
 def get_rent_payment(id):
     payment = RentPayment.query.get_or_404(id)
     return jsonify(payment.to_dict()), 200
+
+@app.route("/api/rent-payments", methods=["GET"])
+@jwt_required()
+def get_rent_payments():
+    user_id = get_jwt_identity()
+
+    payments = RentPayment.query.join(Property).filter(
+        Property.user_id == user_id
+    ).all()
+
+    return jsonify([p.to_dict() for p in payments]), 200
 
 
 @app.route("/api/rent-payments", methods=["POST"])
@@ -265,19 +287,60 @@ def delete_rent_payment(id):
 #  DASHBOARD / REPORTS
 # ─────────────────────────────────────────────
 
+# @app.route("/api/dashboard", methods=["GET"])
+# @jwt_required()
+# def dashboard():
+#     user_id = get_jwt_identity()
+#     total_properties = Property.query.filter_by(user_id=user_id).count()
+#     total_tenants = Tenant.query.count()
+#     total_payments = RentPayment.query.count()
+#     paid = RentPayment.query.filter_by(status="paid").count()
+#     pending = RentPayment.query.filter_by(status="pending").count()
+#     overdue = RentPayment.query.filter_by(status="overdue").count()
+#     total_revenue = db.session.query(
+#         db.func.sum(RentPayment.amount_paid)
+#     ).filter_by(status="paid").scalar() or 0
+
+#     return jsonify({
+#         "total_properties": total_properties,
+#         "total_tenants": total_tenants,
+#         "total_payments": total_payments,
+#         "paid": paid,
+#         "pending": pending,
+#         "overdue": overdue,
+#         "total_revenue": round(total_revenue, 2),
+#     }), 200
+
 @app.route("/api/dashboard", methods=["GET"])
 @jwt_required()
 def dashboard():
     user_id = get_jwt_identity()
+
+    # Properties (already correct)
     total_properties = Property.query.filter_by(user_id=user_id).count()
-    total_tenants = Tenant.query.count()
-    total_payments = RentPayment.query.count()
-    paid = RentPayment.query.filter_by(status="paid").count()
-    pending = RentPayment.query.filter_by(status="pending").count()
-    overdue = RentPayment.query.filter_by(status="overdue").count()
+
+    # Payments (filter via Property)
+    payments_query = RentPayment.query.join(Property).filter(
+        Property.user_id == user_id
+    )
+
+    total_payments = payments_query.count()
+    paid = payments_query.filter(RentPayment.status == "paid").count()
+    pending = payments_query.filter(RentPayment.status == "pending").count()
+    overdue = payments_query.filter(RentPayment.status == "overdue").count()
+
+    # Revenue (only user's payments)
     total_revenue = db.session.query(
         db.func.sum(RentPayment.amount_paid)
-    ).filter_by(status="paid").scalar() or 0
+    ).join(Property).filter(
+        Property.user_id == user_id,
+        RentPayment.status == "paid"
+    ).scalar() or 0
+
+    # Tenants (filter via payments → property)
+    total_tenants = db.session.query(Tenant).join(RentPayment).join(Property).filter(
+        Property.user_id == user_id
+    ).distinct().count()
 
     return jsonify({
         "total_properties": total_properties,
@@ -286,14 +349,13 @@ def dashboard():
         "paid": paid,
         "pending": pending,
         "overdue": overdue,
-        "total_revenue": round(total_revenue, 2),
+        "total_revenue": float(total_revenue),
     }), 200
 
+# if __name__ == "__main__":
+#     app.run()
 
 if __name__ == "__main__":
-    app.run()
-
-# if __name__ == "__main__":
-#     with app.app_context():
-#         db.create_all()
-#     app.run(debug=True, port=5555)
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True, port=5555)
